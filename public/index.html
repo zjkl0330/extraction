@@ -65,21 +65,6 @@
 
     body { font-family: var(--font); background: var(--color-bg); color: var(--color-text); line-height: 1.6; min-height: 100vh; }
 
-    /* ── Password Gate ── */
-    .auth-overlay { position: fixed; inset: 0; z-index: 9998; background: var(--color-bg); display: flex; align-items: center; justify-content: center; padding: 24px; }
-    .auth-overlay.hidden { display: none; }
-    .auth-card { max-width: 380px; width: 100%; text-align: center; }
-    .auth-card .auth-icon { font-size: 48px; margin-bottom: 16px; }
-    .auth-card h2 { font-size: 22px; font-weight: 800; margin-bottom: 8px; }
-    .auth-card p { font-size: 14px; color: var(--color-text-secondary); margin-bottom: 24px; }
-    .auth-input { width: 100%; padding: 14px 18px; font-size: 15px; font-family: var(--font); color: var(--color-text); background: var(--color-surface); border: 2px solid var(--color-border); border-radius: var(--radius-sm); outline: none; transition: border-color .2s, box-shadow .2s; text-align: center; }
-    .auth-input:focus { border-color: var(--color-primary); box-shadow: 0 0 0 4px rgba(124,58,237,.1); }
-    .auth-btn { width: 100%; margin-top: 12px; padding: 14px; font-size: 15px; font-weight: 700; font-family: var(--font); color: #fff; background: var(--color-primary); border: none; border-radius: var(--radius-sm); cursor: pointer; transition: background .2s; }
-    .auth-btn:hover { background: var(--color-primary-hover); }
-    .auth-error { margin-top: 12px; font-size: 13px; color: #dc2626; display: none; }
-    .auth-error.visible { display: block; }
-    .auth-theme-btn { position: fixed; top: 20px; right: 20px; background: var(--color-primary-light); color: var(--color-primary); border: none; width: 36px; height: 36px; border-radius: 999px; font-size: 16px; cursor: pointer; display: flex; align-items: center; justify-content: center; }
-
     /* ── Header ── */
     .header { position: sticky; top: 0; z-index: 100; background: var(--color-header-bg); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); border-bottom: 1px solid var(--color-border); }
     .header-inner { max-width: 1200px; margin: 0 auto; padding: 0 24px; height: 64px; display: flex; align-items: center; justify-content: space-between; }
@@ -89,8 +74,6 @@
     .lang-switch:hover { background: var(--color-primary-lighter); }
     .theme-switch { background: var(--color-primary-light); color: var(--color-primary); border: none; width: 36px; height: 36px; border-radius: 999px; font-size: 16px; cursor: pointer; transition: all .2s; display: flex; align-items: center; justify-content: center; }
     .theme-switch:hover { background: var(--color-primary-lighter); transform: rotate(15deg); }
-    .logout-btn { background: var(--color-primary-light); color: var(--color-primary); border: none; padding: 8px 14px; border-radius: 999px; font-size: 13px; font-weight: 600; cursor: pointer; transition: background .2s; }
-    .logout-btn:hover { background: var(--color-error); color: #fff; }
 
     /* ── Hero ── */
     .hero { padding: 56px 24px 40px; text-align: center; background: linear-gradient(180deg, var(--color-bg-soft) 0%, var(--color-bg) 100%); }
@@ -205,26 +188,12 @@
       .input-wrapper { flex-direction: column; }
       .btn-parse { width: 100%; }
       .back-to-top { bottom: 20px; right: 20px; }
-      .logout-btn { display: none; }
     }
   </style>
 </head>
 <body>
 
-  <!-- Password Gate -->
-  <div class="auth-overlay" id="authOverlay">
-    <button class="auth-theme-btn" onclick="toggleTheme()" id="authThemeBtn">🌙</button>
-    <div class="auth-card">
-      <div class="auth-icon">🔒</div>
-      <h2 data-i18n="authTitle">私人工具</h2>
-      <p data-i18n="authDesc">请输入访问密码</p>
-      <input type="password" class="auth-input" id="authInput" data-i18n-placeholder="authPlaceholder" placeholder="访问密码" onkeydown="if(event.key==='Enter')tryAuth()" />
-      <button class="auth-btn" onclick="tryAuth()" data-i18n="authBtn">进入</button>
-      <div class="auth-error" id="authError" data-i18n="authError">密码错误，请重试</div>
-    </div>
-  </div>
-
-  <!-- Main App (hidden until authed) -->
+  <!-- Main App -->
   <div id="mainApp" style="display:none">
 
   <!-- Header -->
@@ -234,7 +203,6 @@
       <div class="header-actions">
         <button class="theme-switch" onclick="toggleTheme()" id="themeSwitch" title="切换主题">🌙</button>
         <button class="lang-switch" onclick="toggleLang()">EN</button>
-        <button class="logout-btn" onclick="logout()" data-i18n="btnLogout">退出</button>
       </div>
     </div>
   </header>
@@ -356,36 +324,32 @@
     const I18N = {
       zh: {
         pageTitle: "私人视频下载工具",
-        authTitle: "私人工具", authDesc: "请输入访问密码", authPlaceholder: "访问密码", authBtn: "进入", authError: "密码错误，请重试",
         privateTag: "私人使用",
         heroTitle: "多平台视频下载",
         heroSubtitle: "支持 TikTok、抖音、快手、小红书、哔哩哔哩、YouTube、Instagram，视频图片图集一键下载。",
         inputPlaceholder: "粘贴 TikTok / 抖音 / 快手 / 小红书 / B站 链接...",
-        btnParse: "解析视频", btnPaste: "粘贴", btnClear: "清除", btnLogout: "退出",
+        btnParse: "解析视频", btnPaste: "粘贴", btnClear: "清除",
         btnParsing: "解析中...", btnDownloadVideo: "下载视频", btnDownloadMusic: "下载音乐", btnDownloadAllImages: "下载全部图片", btnCopyLink: "复制链接",
         historyTitle: "下载历史", btnClearHistory: "清空历史",
         toastPasteSuccess: "已粘贴", toastPasteFail: "粘贴失败，请手动粘贴",
-        toastHistoryCleared: "历史已清空", toastCopied: "链接已复制", toastLoggedOut: "已退出",
+        toastHistoryCleared: "历史已清空", toastCopied: "链接已复制",
         errorEmpty: "请输入视频链接", errorParse: "解析失败，请检查链接是否正确",
-        errorAuth: "访问已过期，请重新输入密码",
         badgeVideo: "视频", badgeImage: "图集",
         langLabel: "EN",
         historyEmpty: "暂无下载历史",
       },
       en: {
         pageTitle: "Private Video Downloader",
-        authTitle: "Private Tool", authDesc: "Please enter the access password", authPlaceholder: "Access password", authBtn: "Enter", authError: "Wrong password, try again",
         privateTag: "Private",
         heroTitle: "Multi-Platform Video Downloader",
         heroSubtitle: "Supports TikTok, Douyin, Kuaishou, Xiaohongshu, Bilibili, YouTube, Instagram.",
         inputPlaceholder: "Paste TikTok / Douyin / Kuaishou / XHS / Bilibili link...",
-        btnParse: "Parse", btnPaste: "Paste", btnClear: "Clear", btnLogout: "Logout",
+        btnParse: "Parse", btnPaste: "Paste", btnClear: "Clear",
         btnParsing: "Parsing...", btnDownloadVideo: "Download Video", btnDownloadMusic: "Download Music", btnDownloadAllImages: "Download All Images", btnCopyLink: "Copy Link",
         historyTitle: "Download History", btnClearHistory: "Clear History",
         toastPasteSuccess: "Pasted", toastPasteFail: "Paste failed, please paste manually",
-        toastHistoryCleared: "History cleared", toastCopied: "Link copied", toastLoggedOut: "Logged out",
+        toastHistoryCleared: "History cleared", toastCopied: "Link copied",
         errorEmpty: "Please enter a video link", errorParse: "Parse failed, please check the link",
-        errorAuth: "Access expired, please re-enter password",
         badgeVideo: "Video", badgeImage: "Gallery",
         langLabel: "中文",
         historyEmpty: "No download history yet",
@@ -428,60 +392,14 @@
       toastTimer = setTimeout(() => el.classList.remove('visible'), 3000);
     }
 
-    // ── Auth ─────────────────────────────────────
-    function getAuthToken() { return localStorage.getItem('tiksaver-token') || ''; }
-
-    function tryAuth() {
-      const input = document.getElementById('authInput');
-      const errEl = document.getElementById('authError');
-      const token = input.value.trim();
-      if (!token) return;
-      // Store token and test it by calling /api/health (no auth needed, just check connectivity)
-      // Real validation happens on first /api/parse call
-      localStorage.setItem('tiksaver-token', token);
-      // Quick test: call parse with empty body — if 401, token is wrong
-      fetch('/api/parse', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
-        body: JSON.stringify({ url: 'test' }),
-      }).then(res => {
-        if (res.status === 401) {
-          // Token wrong
-          localStorage.removeItem('tiksaver-token');
-          errEl.classList.add('visible');
-          input.value = '';
-          input.focus();
-        } else {
-          // Any other status (400 for bad URL, 502 for parse error, etc.) means token is valid
-          enterApp();
-        }
-      }).catch(() => {
-        localStorage.removeItem('tiksaver-token');
-        errEl.classList.add('visible');
-      });
-    }
+    // ── App entry (已移除访问密码，公开访问) ──
+    function getAuthToken() { return ''; }
 
     function enterApp() {
-      document.getElementById('authOverlay').classList.add('hidden');
       document.getElementById('mainApp').style.display = '';
       applyLang(currentLang);
       document.getElementById('footerCopy').textContent = `© ${new Date().getFullYear()} TikSaver · ${I18N[currentLang].privateTag}`;
       renderHistory();
-    }
-
-    function logout() {
-      localStorage.removeItem('tiksaver-token');
-      document.getElementById('mainApp').style.display = 'none';
-      document.getElementById('authOverlay').classList.remove('hidden');
-      document.getElementById('authInput').value = '';
-      document.getElementById('authInput').focus();
-      showToast(I18N[currentLang].toastLoggedOut, 'success');
-    }
-
-    function showAuthGate() {
-      document.getElementById('mainApp').style.display = 'none';
-      document.getElementById('authOverlay').classList.remove('hidden');
-      document.getElementById('authInput').focus();
     }
 
     // ── Form actions ────────────────────────────
@@ -522,16 +440,9 @@
       try {
         const res = await fetch('/api/parse', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + getAuthToken() },
+          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ url }),
         });
-
-        // If 401, token expired/invalid — show auth gate
-        if (res.status === 401) {
-          localStorage.removeItem('tiksaver-token');
-          showAuthGate();
-          return;
-        }
 
         const data = await res.json();
         skeleton.classList.remove('visible');
@@ -828,7 +739,7 @@
     function applyTheme(theme) {
       document.documentElement.setAttribute('data-theme', theme);
       localStorage.setItem('tiksaver-theme', theme);
-      const btns = [document.getElementById('themeSwitch'), document.getElementById('authThemeBtn')];
+      const btns = [document.getElementById('themeSwitch')];
       btns.forEach(btn => { if (btn) btn.textContent = theme === 'dark' ? '☀️' : '🌙'; });
     }
 
@@ -837,28 +748,8 @@
       const stored = localStorage.getItem('tiksaver-theme');
       const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
       applyTheme(stored || (prefersDark ? 'dark' : 'light'));
-
-      // Check auth
-      if (getAuthToken()) {
-        // Verify token is still valid
-        fetch('/api/parse', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + getAuthToken() },
-          body: JSON.stringify({ url: 'test' }),
-        }).then(res => {
-          if (res.status === 401) {
-            localStorage.removeItem('tiksaver-token');
-            showAuthGate();
-          } else {
-            enterApp();
-          }
-        }).catch(() => {
-          // Network error — still enter app, will retry on actual use
-          enterApp();
-        });
-      } else {
-        showAuthGate();
-      }
+      // 移除访问密码：公开访问，直接进入主界面
+      enterApp();
     })();
   </script>
 </body>

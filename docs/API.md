@@ -4,13 +4,9 @@
 
 ## 鉴权说明
 
-除 `GET /api/health` 外，`/api/parse` 与 `/api/download` 均需要校验访问令牌。令牌在 `wrangler.jsonc` 的 `vars.ACCESS_TOKEN` 中配置。
+本项目已移除访问鉴权，所有接口**公开访问**，无需携带 `Authorization` 头。
 
-| 鉴权头 | 格式 |
-| --- | --- |
-| `Authorization` | `Bearer <ACCESS_TOKEN>` |
-
-未授权返回 `401 { success:false, error:"UNAUTHORIZED" }`。
+> 抖音解析内置 Cloudflare Browser Rendering 无头浏览器渲染兜底，提升数据中心/海外访问的成功率。
 
 ---
 
@@ -23,7 +19,6 @@
 ```bash
 curl -X POST "$WORKER/api/parse" \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $ACCESS_TOKEN" \
   -d '{"url":"https://v.douyin.com/xxxx/"}'
 ```
 
@@ -77,7 +72,6 @@ curl -X POST "$WORKER/api/parse" \
 | HTTP | error | 说明 |
 | --- | --- | --- |
 | 400 | `INVALID_JSON` / `EMPTY_URL` / `NO_URL_FOUND` / `UNSUPPORTED_PLATFORM` | 参数问题 |
-| 401 | `UNAUTHORIZED` | 令牌缺失或错误 |
 | 429 | `RATE_LIMITED` | 超过 20 次/分钟/IP |
 | 502 | `PARSE_FAILED` | 平台解析失败，`message` 为友好提示，`detail` 为内部错误码 |
 

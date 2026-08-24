@@ -1,8 +1,8 @@
 # Extraction
 
-多平台短视频/图片无水印解析下载工具（Cloudflare Worker），支持 **TikTok、抖音、快手、小红书、哔哩哔哩、YouTube、Instagram** 共 7 大平台。基于 Cloudflare Workers + 静态资源部署，带访问鉴权（私人使用）、速率限制与平台级代理下载。
+多平台短视频/图片无水印解析下载工具（Cloudflare Worker），支持 **TikTok、抖音、快手、小红书、哔哩哔哩、YouTube、Instagram** 共 7 大平台。基于 Cloudflare Workers + 静态资源（Worker Static Assets）+ Browser Rendering 无头浏览器部署，含速率限制与平台级代理下载。
 
-> 📌 本项目为**私人使用**工具，所有解析接口均需携带访问令牌（`ACCESS_TOKEN`）方可调用。
+> 📌 本工具为**公开访问**，无需令牌即可使用解析接口；抖音解析内置 Cloudflare 无头浏览器渲染兜底。
 
 ---
 
@@ -12,7 +12,7 @@
 - **无水印下载**：优先返回去除平台水印的直链，交由服务端代理下载。
 - **图片图集支持**：抖音 / TikTok / 快手 / 小红书 / Instagram 图集可批量下载。
 - **视频 & 音乐**：TikTok / 抖音支持同时提取视频与背景音乐。
-- **访问鉴权**：私有部署，`/api/parse` 需携带 `Authorization: Bearer <token>`。
+- **无头浏览器兜底**：抖音解析优先走 Cloudflare Browser Rendering（Puppeteer）真实渲染，破解空壳页；失败降级为普通抓取。
 - **速率限制**：单 IP 每分钟最多 20 次解析请求，内置防滥用。
 - **流式视频代理**：`/api/download` 透传 `Range` 头，支持视频切片/预览。
 - **响应式前端**：支持桌面 / 移动端，含深色模式、多语言、下载历史。
@@ -24,14 +24,14 @@
 | 平台 | 平台标识 | 类型 | 说明 |
 | --- | --- | --- | --- |
 | TikTok | `tiktok` | 视频 / 图集 / 音乐 | 从 SSR 数据多路径提取 |
-| 抖音 | `douyin` | 视频 / 图集 / 音乐 | 多域名分享页 + 直链拼接降级 |
+| 抖音 | `douyin` | 视频 / 图集 / 音乐 | Browser Rendering 渲染 + 多域名分享页 + 直链拼接降级 |
 | 快手 | `kuaishou` | 视频 / 图集 | 从移动端 H5 `INIT_STATE` 提取 |
 | 小红书 | `xiaohongshu` | 视频 / 图文 | 从 `__INITIAL_STATE__` 提取 |
 | 哔哩哔哩 | `bilibili` | 视频 | 公共 API + html5 免登录流 |
 | YouTube | `youtube` | 视频（仅预览） | 签名加密，仅返回元数据 |
 | Instagram | `instagram` | 视频 / 图片 | GraphQL API |
 
-> ⚠️ 抖音对数据中心 IP 常有反爬（分享页返回空壳），本实现内置多域名 + 多提取方式降级，但仍受平台风控影响，失败时会给出明确提示。
+> ⚠️ 抖音对数据中心 IP 常有反爬（分享页返回空壳），本实现优先使用 Cloudflare 无头浏览器真实渲染破解空壳，失败时降级为多域名抓取，并受平台风控影响，失败时会给出明确提示。
 
 ---
 
@@ -42,7 +42,7 @@
 ├── src/
 │   └── index.ts              # Cloudflare Worker 主入口（所有解析器 + 路由）
 ├── public/
-│   └── index.html            # 前端单页应用（密码门禁 + 主界面）
+│   └── index.html            # 前端单页应用（公开访问，无需密码）
 ├── docs/
 │   └── API.md                # 接口文档
 ├── wrangler.jsonc            # Worker 配置（资源目录 / 变量）
@@ -68,12 +68,7 @@ npm run dev
 npm run types
 ```
 
-`ACCESS_TOKEN` 在 `wrangler.jsonc` 的 `vars` 中配置。本地开发时亦可用 `.dev.vars`（加入 `.gitignore`）覆盖。
-
-```env
-# .dev.vars
-ACCESS_TOKEN=your-secret-token
-```
+> 抖音的无头浏览器兜底依赖线上 `BROWSER` binding（Browser Rendering），本地 `wrangler dev` 无该 binding 时会自动降级为普通抓取。
 
 ---
 
@@ -88,9 +83,9 @@ export CLOUDFLARE_ACCOUNT_ID=your_account_id
 npm run deploy
 ```
 
-部署完成后访问 `https://<worker-name>.<account-id>.workers.dev`，会先进入访问密码页（密码即 `ACCESS_TOKEN`）。
+部署完成后访问 `https://<worker-name>.<account-id>.workers.dev` 即可直接使用，无需密码。
 
-**务必**：`wrangler.jsonc` 中的 `ACCESS_TOKEN` 请替换为你自己的强密码，勿使用仓库默认值。
+> 若需启用抖音的无头浏览器解析，请在 Cloudflare Dashboard 为该 Worker 开通 **Browser Rendering** 服务，`wrangler.jsonc` 中已预置 `browser.binding = "BROWSER"`。
 
 ---
 
@@ -105,7 +100,8 @@ npm run deploy
 | 头 | 值 |
 | --- | --- |
 | `Content-Type` | `application/json` |
-| `Authorization` | `Bearer <ACCESS_TOKEN>` |
+
+> 本接口为公开访问，无需携带 `Authorization`。
 
 **请求体**
 
@@ -159,20 +155,20 @@ npm run deploy
 
 各平台解析器尽量利用页面对公开爬取友好的嵌入式数据，避免计算签名：
 
-- **抖音 / TikTok / 快手 / 小红书**：抓取分享页 HTML，从 `_ROUTER_DATA` / `__INITIAL_STATE__` / `INIT_STATE` 等全局 JSON 中提取 `play_addr` 或图集地址。抖音会从 HTML 提取 `uri` 后拼接官方 `play` 接口拿到无水印直链。
+- **抖音 / TikTok / 快手 / 小红书**：抓取分享页 HTML，从 `_ROUTER_DATA` / `__INITIAL_STATE__` / `INIT_STATE` 等全局 JSON 中提取 `play_addr` 或图集地址。抖音抢先尝试 Browser Rendering 无头浏览器真实渲染（破解空壳），再从渲染后 HTML 中取 `uri` 拼接官方 `play` 接口拿到无水印直链。
 - **哔哩哔哩**：调用官方公开接口 `x/web-interface/view` 获取 BV/CID，再用 `x/player/playurl` 的 html5 平台参数免登录拿到分段直链。
 - **YouTube**：受签名加密限制，Worker 内只能获取元数据（oembed），直链下载需配合 `yt-dlp` 等外部工具。
 - 下载代理会按平台补全 `Referer` 请求头，规避常见的防盗链 403。
 
-> 提示：平台反爬策略动态变化，某些平台（尤其抖音）在数据中心/海外 IP 下可能被临时拦截。若解析失败，前端会给出明确的中文提示。
+> 提示：平台反爬策略动态变化，某些平台（尤其抖音）在数据中心/海外 IP 下可能被临时拦截。抖音已叠加 Browser Rendering 渲染兜底以提升成功率；若仍失败，前端会给出明确的中文提示。
 
 ---
 
 ## 🔒 安全说明
 
-- 本项目内置访问鉴权，仅供**私人 / 小范围**使用，请勿公开部署后分发密码。
-- `ACCESS_TOKEN` 属于敏感配置，请勿提交到 Git 历史；本仓库已用 `.gitignore` 与占位符规避。
+- 本工具为**公开访问**，请勿在生产环境上传敏感信息；如需限流请调整 `RATE_LIMIT_MAX`。
 - 代理下载仅放行白名单媒体域名，防止被滥用作通用代理。
+- 抖音解析使用 Cloudflare 官方 Browser Rendering 服务，遵循其计费与使用条款。
 
 ---
 

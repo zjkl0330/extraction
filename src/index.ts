@@ -1,18 +1,21 @@
 /**
- * TikSaver — 私人多平台视频下载器 (Cloudflare Worker)
+ * TikSaver — 多平台视频下载器 (Cloudflare Worker)
  *
  * 支持平台：TikTok / 抖音 / 快手 / 小红书 / 哔哩哔哩 / YouTube / Instagram
  *
  * Routes:
- *   POST /api/parse        — 解析链接（需 ACCESS_TOKEN 鉴权）
+ *   POST /api/parse        — 解析链接（公开访问）
  *   GET  /api/download     — 代理下载
  *   GET  /api/health       — 健康检查
  *   *                     — 静态资源
  */
 
+import puppeteer from "@cloudflare/puppeteer";
+import type { BrowserWorker } from "@cloudflare/puppeteer";
+
 export interface Env {
   ASSETS: Fetcher;
-  ACCESS_TOKEN: string;
+  BROWSER?: BrowserWorker;
 }
 
 // ── 通用类型 ──────────────────────────────────────────
@@ -133,13 +136,7 @@ function extractJsonObject(text: string, startIndex: number): string | null {
   return null;
 }
 
-/** 访问令牌验证 */
-function checkAccessToken(request: Request, env: Env): boolean {
-  if (!env.ACCESS_TOKEN || env.ACCESS_TOKEN === "change-me") return false;
-  const auth = request.headers.get("Authorization") ?? "";
-  const token = auth.replace(/^Bearer\s+/i, "");
-  return token === env.ACCESS_TOKEN;
-}
+/** 访问令牌验证（已弃用：本项目改为公开访问，移除密码） */
 
 // ── 速率限制 ──────────────────────────────────────────
 
@@ -337,6 +334,20 @@ async function extractDouyinVideoId(rawUrl: string): Promise<string> {
   return videoId;
 }
 
+/** 使用无头浏览器抓取抖音分享页（更接近真实用户，可绕过部分空壳限制） */
+async function fetchDouyinWithBrowser(endpoint: BrowserWorker, videoId: string): Promise<{ host: string; html: string }> {
+  const browser = await puppeteer.launch(endpoint, { keep_alive: 600000 });
+  try {
+    const page = await browser.newPage();
+    const url = `https://www.iesdouyin.com/share/video/${videoId}/`;
+    await page.goto(url, { waitUntil: "networkidle2", timeout: 30000 });
+    const html = await page.content();
+    return { host: "puppeteer", html };
+  } finally {
+    await browser.close();
+  }
+}
+
 /** 抓取抖音分享页 HTML（多域名依次尝试） */
 async function fetchDouyinShareHtml(videoId: string): Promise<{ host: string; html: string }> {
   let lastErr = "no host available";
@@ -430,12 +441,24 @@ function buildDouyinPlayUrl(uri: string): string {
   return `https://www.douyin.com/aweme/v1/play/?video_id=${uri}&ratio=1080p&line=0`;
 }
 
-async function parseDouyin(rawUrl: string): Promise<ParsedResult> {
+async function parseDouyin(rawUrl: string, browser?: BrowserWorker): Promise<ParsedResult> {
   // Step 1: 提取视频 ID
   const videoId = await extractDouyinVideoId(rawUrl);
 
-  // Step 2: 抓取分享页（多域名降级）
-  const { html } = await fetchDouyinShareHtml(videoId);
+  // Step 2: 优先使用无头浏览器抓取（真实渲染，破解空壳），失败则降级到普通 fetch
+  let html = "";
+  let viaBrowser = false;
+  if (browser) {
+    try {
+      const r = await fetchDouyinWithBrowser(browser, videoId);
+      html = r.html;
+      viaBrowser = true;
+    } catch { /* 浏览器失败，降级 fetch */ }
+  }
+  if (!html) {
+    const r = await fetchDouyinShareHtml(videoId);
+    html = r.html;
+  }
 
   // Step 3: 尝试解析完整数据
   let item: any = null;
@@ -518,7 +541,7 @@ async function parseDouyin(rawUrl: string): Promise<ParsedResult> {
     shareCount: stats.share_count ?? 0,
     downloadCount: 0,
     createTime: item?.create_time ?? 0,
-    note: item ? undefined : "抖音当前可能对数据中心网络有限制，若解析失败请稍后重试或更换网络",
+    note: item ? undefined : (viaBrowser ? "抖音端在浏览器渲染后仍未返回完整数据，可能是平台风控，请稍后重试" : "抖音当前可能对数据中心网络有限制，若解析失败请稍后重试或更换网络"),
   };
 }
 
@@ -900,13 +923,13 @@ async function parseInstagram(rawUrl: string): Promise<ParsedResult> {
 
 // ── 平台分发 ──────────────────────────────────────────
 
-async function parseUrl(url: string): Promise<ParsedResult> {
+async function parseUrl(url: string, browser?: BrowserWorker): Promise<ParsedResult> {
   const platform = detectPlatform(url);
   if (!platform) throw new Error("UNSUPPORTED_PLATFORM");
 
   switch (platform) {
     case "tiktok": return parseTikTok(url);
-    case "douyin": return parseDouyin(url);
+    case "douyin": return parseDouyin(url, browser);
     case "kuaishou": return parseKuaishou(url);
     case "xiaohongshu": return parseXiaohongshu(url);
     case "bilibili": return parseBilibili(url);
@@ -982,11 +1005,6 @@ async function proxyDownload(url: string, filename: string, contentType: string,
 // ── Route Handlers ─────────────────────────────────────
 
 async function handleParse(request: Request, env: Env): Promise<Response> {
-  // 鉴权：私人使用，需提供正确的 ACCESS_TOKEN
-  if (!checkAccessToken(request, env)) {
-    return json({ success: false, error: "UNAUTHORIZED", message: "未授权访问" }, 401);
-  }
-
   cleanupRateLimit();
   const ip = request.headers.get("CF-Connecting-IP") ?? "unknown";
   if (!checkRateLimit(ip)) {
@@ -1019,7 +1037,7 @@ async function handleParse(request: Request, env: Env): Promise<Response> {
   };
 
   try {
-    const result = await parseUrl(url);
+    const result = await parseUrl(url, env.BROWSER);
     return json({ success: true, data: result });
   } catch (err) {
     const msg = err instanceof Error ? err.message : "未知错误";
