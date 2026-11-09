@@ -15,5 +15,17 @@
 
   "browser": {
     "binding": "BROWSER"
+  },
+
+  "kv_namespaces": [
+    {
+      "binding": "DOUYIN_KV",
+      "id": "cec2f6ee74044c10af696e0b7b107b22"
+    }
+  ],
+
+  "vars": {
+    "RELAY_BASE": "https://exit.zjkl.qzz.io",
+    "RELAY_KEY": "sk_main_69d7c3cee69c5b2f0b448061d7c87c5b"
   }
 }
