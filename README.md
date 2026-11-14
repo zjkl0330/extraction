@@ -24,7 +24,7 @@
 | 平台 | 平台标识 | 类型 | 说明 |
 | --- | --- | --- | --- |
 | TikTok | `tiktok` | 视频 / 图集 / 音乐 | 从 SSR 数据多路径提取 |
-| 抖音 | `douyin` | 视频 / 图集 / 音乐 | Browser Rendering 渲染 + 多域名分享页 + 直链拼接降级 |
+| 抖音 | `douyin` | 视频 / 图集 / 音乐 | 自注册 ttwid + iesdouyin 分享页 SSR 直出数据 |
 | 快手 | `kuaishou` | 视频 / 图集 | 从移动端 H5 `INIT_STATE` 提取 |
 | 小红书 | `xiaohongshu` | 视频 / 图文 | 从 `__INITIAL_STATE__` 提取 |
 | 哔哩哔哩 | `bilibili` | 视频 | 公共 API + html5 免登录流 |
@@ -149,18 +149,57 @@ npm run deploy
 
 健康检查，返回服务状态与平台列表。
 
+### `POST /mcp`（MCP 服务端）
+
+遵循 MCP Streamable HTTP 传输（JSON-RPC 2.0），供 Claude、Cursor、Cherry Studio 等 MCP 客户端直接接入。
+
+- 端点：`POST https://<你的域名>/mcp`
+- 鉴权：`Authorization: Bearer <MCP_TOKEN>`（也支持 `?token=<MCP_TOKEN>`）
+- 配置令牌：`wrangler secret put MCP_TOKEN`
+
+暴露的工具：
+
+| 工具 | 参数 | 说明 |
+| --- | --- | --- |
+| `parse_video` | `url: string` | 解析分享链接，返回作者、标题、封面、无水印直链、图集与统计 |
+| `list_platforms` | — | 列出支持的平台及域名 |
+
+调用示例：
+
+```bash
+curl -X POST https://<你的域名>/mcp \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $MCP_TOKEN" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call",
+       "params":{"name":"parse_video","arguments":{"url":"https://v.douyin.com/xxxx/"}}}'
+```
+
+客户端配置示例（Claude Desktop / Cursor 等支持远程 MCP 的客户端）：
+
+```json
+{
+  "mcpServers": {
+    "tiksaver": {
+      "type": "http",
+      "url": "https://<你的域名>/mcp",
+      "headers": { "Authorization": "Bearer <MCP_TOKEN>" }
+    }
+  }
+}
+```
+
 ---
 
 ## 🧠 解析原理（简要）
 
 各平台解析器尽量利用页面对公开爬取友好的嵌入式数据，避免计算签名：
 
-- **抖音 / TikTok / 快手 / 小红书**：抓取分享页 HTML，从 `_ROUTER_DATA` / `__INITIAL_STATE__` / `INIT_STATE` 等全局 JSON 中提取 `play_addr` 或图集地址。抖音抢先尝试 Browser Rendering 无头浏览器真实渲染（破解空壳），再从渲染后 HTML 中取 `uri` 拼接官方 `play` 接口拿到无水印直链。
+- **抖音**：向 `ttwid.bytedance.com` 自注册 ttwid 后，带该 Cookie 抓取 `iesdouyin.com` 分享页，SSR 会直接内嵌 `_ROUTER_DATA.videoInfoRes.item_list`，无需签名、无头浏览器或住宅出口。浏览器渲染与 ESP32 出口仅作兜底。
 - **哔哩哔哩**：调用官方公开接口 `x/web-interface/view` 获取 BV/CID，再用 `x/player/playurl` 的 html5 平台参数免登录拿到分段直链。
 - **YouTube**：受签名加密限制，Worker 内只能获取元数据（oembed），直链下载需配合 `yt-dlp` 等外部工具。
 - 下载代理会按平台补全 `Referer` 请求头，规避常见的防盗链 403。
 
-> 提示：平台反爬策略动态变化，某些平台（尤其抖音）在数据中心/海外 IP 下可能被临时拦截。抖音已叠加 Browser Rendering 渲染兜底以提升成功率；若仍失败，前端会给出明确的中文提示。
+> 提示：平台反爬策略动态变化，某些平台（尤其抖音）在数据中心/海外 IP 下可能被临时拦截。抖音已改为分享页 SSR 路线，失败时再降级到无头浏览器与住宅出口。
 
 ---
 

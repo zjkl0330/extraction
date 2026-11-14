@@ -7,6 +7,7 @@
  *   POST /api/parse        — 解析链接（公开访问）
  *   GET  /api/download     — 代理下载
  *   GET  /api/health       — 健康检查
+ *   POST /mcp              — MCP 服务端（Bearer 令牌鉴权）
  *   *                     — 静态资源
  */
 
@@ -19,6 +20,7 @@ export interface Env {
   DOUYIN_KV?: KVNamespace;
   RELAY_BASE?: string;
   RELAY_KEY?: string;
+  MCP_TOKEN?: string;
 }
 
 // ── 通用类型 ──────────────────────────────────────────
@@ -1673,8 +1675,191 @@ async function handleDownload(request: Request, url: URL): Promise<Response> {
   }
 }
 
+const PLATFORM_LIST = [
+  { id: "tiktok", name: "TikTok", domains: ["tiktok.com", "vm.tiktok.com", "vt.tiktok.com"] },
+  { id: "douyin", name: "抖音", domains: ["douyin.com", "iesdouyin.com", "v.douyin.com"] },
+  { id: "kuaishou", name: "快手", domains: ["kuaishou.com", "v.kuaishou.com", "chenzhongtech.com"] },
+  { id: "xiaohongshu", name: "小红书", domains: ["xiaohongshu.com", "xhslink.com"] },
+  { id: "bilibili", name: "哔哩哔哩", domains: ["bilibili.com", "b23.tv"] },
+  { id: "youtube", name: "YouTube", domains: ["youtube.com", "youtu.be"] },
+  { id: "instagram", name: "Instagram", domains: ["instagram.com"] },
+];
+
 function handleHealth(): Response {
-  return json({ status: "ok", timestamp: Date.now(), service: "tiksaver", platforms: ["tiktok", "douyin", "kuaishou", "xiaohongshu", "bilibili", "youtube", "instagram"] });
+  return json({ status: "ok", timestamp: Date.now(), service: "tiksaver", platforms: PLATFORM_LIST.map((p) => p.id) });
+}
+
+// ═══════════════════════════════════════════════════════════
+//  MCP 服务端（Streamable HTTP + JSON-RPC 2.0）
+//  鉴权：Authorization: Bearer <MCP_TOKEN>（也支持 ?token=）
+// ═══════════════════════════════════════════════════════════
+
+const MCP_PROTOCOL_VERSION = "2024-11-05";
+
+const MCP_TOOLS = [
+  {
+    name: "parse_video",
+    description:
+      "解析视频/图集分享链接，返回作者、标题、封面、无水印视频直链、图集与播放统计数据。支持 TikTok、抖音、快手、小红书、B站、YouTube、Instagram。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        url: { type: "string", description: "分享链接，或包含分享链接的文本（会自动提取 URL）" },
+      },
+      required: ["url"],
+    },
+    annotations: { readOnlyHint: true, openWorldHint: true },
+  },
+  {
+    name: "list_platforms",
+    description: "列出本服务支持解析的平台及对应域名。",
+    inputSchema: { type: "object", properties: {} },
+    annotations: { readOnlyHint: true },
+  },
+];
+
+const rpcResult = (id: unknown, result: unknown) => ({ jsonrpc: "2.0", id, result });
+const rpcError = (id: unknown, code: number, message: string) => ({
+  jsonrpc: "2.0",
+  id,
+  error: { code, message },
+});
+
+/** 常量时间比较令牌 */
+function tokenEquals(a: string, b: string): boolean {
+  const ea = new TextEncoder().encode(a);
+  const eb = new TextEncoder().encode(b);
+  if (ea.length !== eb.length) return false;
+  let diff = 0;
+  for (let i = 0; i < ea.length; i++) diff |= ea[i] ^ eb[i];
+  return diff === 0;
+}
+
+function mcpAuthorized(request: Request, env: Env, url: URL): boolean {
+  if (!env.MCP_TOKEN) return false;
+  const header = request.headers.get("Authorization") ?? "";
+  const provided = /^Bearer\s+(.+)$/i.exec(header)?.[1]?.trim() ?? url.searchParams.get("token")?.trim() ?? "";
+  return provided.length > 0 && tokenEquals(provided, env.MCP_TOKEN);
+}
+
+async function handleMcp(request: Request, env: Env): Promise<Response> {
+  const url = new URL(request.url);
+
+  if (!env.MCP_TOKEN) {
+    return json({ error: "MCP_NOT_CONFIGURED", message: "服务端未配置 MCP_TOKEN，请先执行 wrangler secret put MCP_TOKEN" }, 503);
+  }
+  if (!mcpAuthorized(request, env, url)) {
+    return new Response(JSON.stringify({ jsonrpc: "2.0", id: null, error: { code: -32001, message: "Unauthorized: 缺少或无效的访问令牌" } }), {
+      status: 401,
+      headers: { "Content-Type": "application/json", "WWW-Authenticate": "Bearer" },
+    });
+  }
+  if (request.method !== "POST") {
+    // Streamable HTTP 允许服务端不提供 GET 的 SSE 流
+    return new Response(null, { status: 405, headers: { Allow: "POST" } });
+  }
+
+  let payload: unknown;
+  try {
+    payload = await request.json();
+  } catch {
+    return json(rpcError(null, -32700, "Parse error: 请求体不是合法 JSON"), 400);
+  }
+
+  if (Array.isArray(payload)) {
+    const out: unknown[] = [];
+    for (const msg of payload) {
+      const r = await mcpDispatch(msg, env);
+      if (r) out.push(r);
+    }
+    return out.length ? json(out) : new Response(null, { status: 202 });
+  }
+
+  const r = await mcpDispatch(payload, env);
+  // 通知类消息（无 id）不需要响应
+  if (!r) return new Response(null, { status: 202 });
+  return json(r);
+}
+
+async function mcpDispatch(msg: any, env: Env): Promise<any | null> {
+  if (!msg || msg.jsonrpc !== "2.0" || typeof msg.method !== "string") {
+    return rpcError(msg?.id ?? null, -32600, "Invalid Request");
+  }
+  const id = msg.id;
+  const isNotification = id === undefined || id === null;
+
+  switch (msg.method) {
+    case "initialize":
+      return rpcResult(id, {
+        protocolVersion: typeof msg.params?.protocolVersion === "string" ? msg.params.protocolVersion : MCP_PROTOCOL_VERSION,
+        capabilities: { tools: { listChanged: false } },
+        serverInfo: { name: "tiksaver-mcp", version: "1.0.0" },
+        instructions: "调用 parse_video 传入分享链接即可获取无水印视频/图集信息；调用 list_platforms 查看支持平台。",
+      });
+    case "notifications/initialized":
+    case "notifications/cancelled":
+      return null;
+    case "ping":
+      return rpcResult(id, {});
+    case "tools/list":
+      return rpcResult(id, { tools: MCP_TOOLS });
+    case "resources/list":
+      return rpcResult(id, { resources: [] });
+    case "resources/templates/list":
+      return rpcResult(id, { resourceTemplates: [] });
+    case "prompts/list":
+      return rpcResult(id, { prompts: [] });
+    case "tools/call":
+      return mcpToolCall(id, msg.params, env);
+    default:
+      return isNotification ? null : rpcError(id, -32601, `Method not found: ${msg.method}`);
+  }
+}
+
+async function mcpToolCall(id: unknown, params: any, env: Env): Promise<any> {
+  const name = params?.name;
+  const args = params?.arguments ?? {};
+
+  if (name === "list_platforms") {
+    return rpcResult(id, {
+      content: [{ type: "text", text: JSON.stringify(PLATFORM_LIST, null, 2) }],
+      structuredContent: { platforms: PLATFORM_LIST },
+    });
+  }
+
+  if (name !== "parse_video") {
+    return rpcError(id, -32602, `Unknown tool: ${name}`);
+  }
+
+  const rawInput = typeof args.url === "string" ? args.url : "";
+  if (!rawInput.trim()) {
+    return rpcResult(id, { isError: true, content: [{ type: "text", text: "参数 url 不能为空" }] });
+  }
+  const target = extractUrl(rawInput);
+  if (!target) {
+    return rpcResult(id, { isError: true, content: [{ type: "text", text: "未从输入中识别到有效链接" }] });
+  }
+  const platform = detectPlatform(target);
+  if (!platform) {
+    return rpcResult(id, {
+      isError: true,
+      content: [{ type: "text", text: `不支持的平台，当前支持：${PLATFORM_LIST.map((p) => p.name).join("、")}` }],
+    });
+  }
+
+  try {
+    const result = await parseUrl(target, env, env.BROWSER);
+    return rpcResult(id, {
+      content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+      structuredContent: result as unknown as Record<string, unknown>,
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "未知错误";
+    return rpcResult(id, {
+      isError: true,
+      content: [{ type: "text", text: `解析失败：${msg}` }],
+    });
+  }
 }
 
 // ── Entry Point ────────────────────────────────────────
@@ -1698,6 +1883,7 @@ export default {
     if (pathname === "/api/parse" && method === "POST") return handleParse(request, env);
     if (pathname === "/api/download" && method === "GET") return handleDownload(request, url);
     if (pathname === "/api/health" && method === "GET") return handleHealth();
+    if (pathname === "/mcp" || pathname === "/mcp/") return handleMcp(request, env);
 
     return env.ASSETS.fetch(request);
   },
