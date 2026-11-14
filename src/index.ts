@@ -1319,7 +1319,61 @@ async function parseXiaohongshu(rawUrl: string): Promise<ParsedResult> {
 
 // ── 哔哩哔哩 (Bilibili) ───────────────────────────────
 
-async function parseBilibili(rawUrl: string): Promise<ParsedResult> {
+/** B 站 API 需要 buvid3 等 Cookie，否则返回 412 反爬页 */
+async function getBilibiliCookie(): Promise<string> {
+  try {
+    const res = await fetch("https://www.bilibili.com/", {
+      headers: { "User-Agent": PC_UA, Accept: "text/html,application/xhtml+xml,*/*;q=0.8" },
+    });
+    await res.text().catch(() => {});
+    const raw: string[] =
+      typeof (res.headers as any).getSetCookie === "function"
+        ? (res.headers as any).getSetCookie()
+        : (res.headers.get("set-cookie") ? [res.headers.get("set-cookie")!] : []);
+    const parts: string[] = [];
+    for (const c of raw) {
+      const kv = c.split(";")[0].trim();
+      if (/^(buvid3|buvid4|b_nut|_uuid)=/.test(kv)) parts.push(kv);
+    }
+    return parts.join("; ");
+  } catch {
+    return "";
+  }
+}
+
+/** 解析 relay 返回（HTML 原样；JSON 会被包成 {data:{b64|text}}） */
+function parseRelayJson(raw: string): any {
+  try { return JSON.parse(raw); } catch { /* wrapper */ }
+  const w = JSON.parse(raw);
+  const d = w?.data;
+  if (typeof d === "string") return JSON.parse(d);
+  if (typeof d?.text === "string") return JSON.parse(d.text);
+  if (typeof d?.b64 === "string") {
+    const bin = atob(d.b64);
+    const bytes = Uint8Array.from(bin, (c) => c.charCodeAt(0));
+    return JSON.parse(new TextDecoder().decode(bytes));
+  }
+  throw new Error("RELAY_BAD_JSON");
+}
+
+/** B 站 API：直连失败（412 风控）时改走住宅出口 */
+async function biliApi(env: Env, apiUrl: string, headers: Record<string, string>): Promise<any | null> {
+  try {
+    const r = await fetch(apiUrl, { headers });
+    if (r.ok) {
+      const j: any = await r.json();
+      if (j?.code === 0) return j;
+    }
+  } catch { /* 走出口 */ }
+  if (env.RELAY_BASE && env.RELAY_KEY) {
+    try {
+      return parseRelayJson(await relayFetch(env, apiUrl, headers, 200000));
+    } catch { /* 放弃 */ }
+  }
+  return null;
+}
+
+async function parseBilibili(rawUrl: string, env: Env): Promise<ParsedResult> {
   // 跟随 b23.tv 短链
   let finalUrl = rawUrl;
   if (rawUrl.includes("b23.tv")) {
@@ -1333,18 +1387,21 @@ async function parseBilibili(rawUrl: string): Promise<ParsedResult> {
 
   if (!bvid && !avMatch) throw new Error("BILI_NO_BVID");
 
+  const cookie = await getBilibiliCookie();
+  const biliHeaders: Record<string, string> = {
+    "User-Agent": PC_UA,
+    Referer: "https://www.bilibili.com/",
+    Origin: "https://www.bilibili.com",
+    ...(cookie ? { Cookie: cookie } : {}),
+  };
+
   // 获取视频信息
   const viewUrl = bvid
     ? `https://api.bilibili.com/x/web-interface/view?bvid=${bvid}`
     : `https://api.bilibili.com/x/web-interface/view?aid=${avMatch![1]}`;
 
-  const viewRes = await fetch(viewUrl, {
-    headers: { "User-Agent": PC_UA, Referer: "https://www.bilibili.com/" },
-  });
-  if (!viewRes.ok) throw new Error(`HTTP ${viewRes.status}`);
-  const viewData = await viewRes.json() as any;
-
-  if (viewData.code !== 0 || !viewData.data) throw new Error("BILI_API_ERROR");
+  const viewData = await biliApi(env, viewUrl, biliHeaders);
+  if (!viewData || viewData.code !== 0 || !viewData.data) throw new Error("BILI_API_ERROR");
 
   const d = viewData.data;
   const aid = d.aid;
@@ -1352,16 +1409,11 @@ async function parseBilibili(rawUrl: string): Promise<ParsedResult> {
 
   // 获取视频流 URL（使用 html5 平台，免登录）
   const playUrl = `https://api.bilibili.com/x/player/playurl?bvid=${bvid || ""}&aid=${aid}&cid=${cid}&platform=html5&qn=32&try_look=1`;
-  const playRes = await fetch(playUrl, {
-    headers: { "User-Agent": PC_UA, Referer: "https://www.bilibili.com/" },
-  });
+  const playData = await biliApi(env, playUrl, biliHeaders);
 
   let videoUrl = "";
-  if (playRes.ok) {
-    const playData = await playRes.json() as any;
-    if (playData.code === 0 && playData.data?.durl?.length > 0) {
-      videoUrl = playData.data.durl[0].url ?? "";
-    }
+  if (playData?.code === 0 && playData.data?.durl?.length > 0) {
+    videoUrl = playData.data.durl[0].url ?? "";
   }
 
   // 统计数据
@@ -1406,62 +1458,146 @@ async function parseYouTube(rawUrl: string): Promise<ParsedResult> {
   }
   if (!videoId) throw new Error("YT_NO_VIDEO_ID");
 
-  // 使用 oembed 获取元数据
-  const oembedUrl = `https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=${videoId}&format=json`;
-  const res = await fetch(oembedUrl, { headers: { "User-Agent": PC_UA } });
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  const data = await res.json() as any;
+  // 通过 Innertube 播放器接口取直链（IOS / ANDROID_VR 客户端无需 PO Token 与签名解密，实测可直出）
+  const clients = [
+    { clientName: "IOS", clientVersion: "20.10.4", deviceMake: "Apple", deviceModel: "iPhone16,2", osName: "iPhone", osVersion: "18.3.2.22D82" },
+    { clientName: "ANDROID_VR", clientVersion: "1.65.10", deviceMake: "Oculus", deviceModel: "Quest 3", osName: "Android", osVersion: "12L", androidSdkVersion: 32 },
+  ];
+  let player: any = null;
+  for (const client of clients) {
+    try {
+      const res = await fetch("https://www.youtube.com/youtubei/v1/player?prettyPrint=false", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "User-Agent": PC_UA },
+        body: JSON.stringify({ context: { client }, videoId, contentCheckOk: true, racyCheckOk: true }),
+      });
+      if (!res.ok) continue;
+      const j: any = await res.json();
+      if (j?.streamingData) { player = j; break; }
+    } catch { /* 换下一个客户端 */ }
+  }
+
+  const vd = player?.videoDetails ?? {};
+  const sd = player?.streamingData ?? {};
+  const formats: any[] = [...(sd.formats ?? []), ...(sd.adaptiveFormats ?? [])];
+  const mp4s = formats.filter((f) => typeof f.url === "string" && /video\/mp4/.test(f.mimeType ?? ""));
+  // 优先带音轨的合并流（itag 18/22），否则退回最高画质视频轨
+  const muxed = mp4s.filter((f) => f.audioQuality || f.itag === 18 || f.itag === 22);
+  const best = (muxed.length ? muxed : mp4s).sort(
+    (a, b) => (b.height ?? 0) - (a.height ?? 0) || (b.bitrate ?? 0) - (a.bitrate ?? 0),
+  )[0];
+  const videoUrl: string = best?.url ?? "";
+  // 无合并流时，额外提供最高码率音频轨（m4a），便于客户端自行合成
+  const audio = formats
+    .filter((f) => typeof f.url === "string" && /audio\/mp4/.test(f.mimeType ?? ""))
+    .sort((a, b) => (b.bitrate ?? 0) - (a.bitrate ?? 0))[0];
+  const musicUrl: string = muxed.length ? "" : (audio?.url ?? "");
+
+  // 元数据兜底：Innertube 未返回时退回 oembed
+  let meta: any = {};
+  if (!vd.title) {
+    try {
+      const r = await fetch(`https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=${videoId}&format=json`, {
+        headers: { "User-Agent": PC_UA },
+      });
+      if (r.ok) meta = await r.json();
+    } catch { /* ignore */ }
+  }
+
+  const thumbs: any[] = vd.thumbnail?.thumbnails ?? [];
 
   return {
     platform: "youtube",
     type: "video",
-    author: data.author_name ?? "Unknown",
-    authorId: data.author_url?.replace("https://www.youtube.com/", "") ?? "",
+    author: vd.author ?? meta.author_name ?? "Unknown",
+    authorId: vd.channelId ?? "",
     avatar: "",
-    desc: data.title ?? "",
-    cover: data.thumbnail_url ?? `https://img.youtube.com/vi/${videoId}/hqdefault.jpg`,
-    videoUrl: `https://www.youtube.com/watch?v=${videoId}`,
-    musicUrl: "",
-    duration: 0,
+    desc: vd.title ?? meta.title ?? "",
+    cover: thumbs.length ? (thumbs[thumbs.length - 1]?.url ?? "") : (meta.thumbnail_url ?? `https://img.youtube.com/vi/${videoId}/hqdefault.jpg`),
+    videoUrl,
+    musicUrl,
+    duration: Number(vd.lengthSeconds ?? 0),
     images: [],
-    playCount: 0,
+    playCount: Number(vd.viewCount ?? 0),
     diggCount: 0,
     commentCount: 0,
     shareCount: 0,
     downloadCount: 0,
     createTime: 0,
-    note: "YouTube 因签名加密机制，暂不支持直接下载。请使用 yt-dlp 等专业工具下载。",
+    note: videoUrl
+      ? (muxed.length ? undefined : "YouTube 直链为分离的视频轨与音频轨（musicUrl 为音频），需客户端自行合成；也可用 yt-dlp 一键合并")
+      : "YouTube 未返回可下载直链（可能触发风控），请稍后重试",
   };
 }
 
 // ── Instagram ─────────────────────────────────────────
 
-async function parseInstagram(rawUrl: string): Promise<ParsedResult> {
+async function parseInstagram(rawUrl: string, env: Env): Promise<ParsedResult> {
   // 提取 shortcode
   const m = rawUrl.match(/instagram\.com\/(?:[^/]+\/)?(?:reel|p|reels)\/([^/?]+)/);
   if (!m) throw new Error("IG_NO_SHORTCODE");
   const shortcode = m[1];
 
-  // 使用 GraphQL API
+  // 使用 GraphQL API（失败时退回 embed 页面解析）
   const graphqlUrl = "https://www.instagram.com/api/graphql";
 
-  const res = await fetch(graphqlUrl, {
-    method: "POST",
-    headers: {
-      "User-Agent": PC_UA,
-      "Content-Type": "application/x-www-form-urlencoded",
-      "X-IG-App-ID": "936619743392459",
-      "X-FB-LSD": "",
-      Referer: `https://www.instagram.com/p/${shortcode}/`,
-    },
-    body: `variables=${encodeURIComponent(JSON.stringify({ shortcode }))}&doc_id=10015901848480474`,
-  });
+  let media: any = null;
+  try {
+    const res = await fetch(graphqlUrl, {
+      method: "POST",
+      headers: {
+        "User-Agent": PC_UA,
+        "Content-Type": "application/x-www-form-urlencoded",
+        "X-IG-App-ID": "936619743392459",
+        "X-FB-LSD": "",
+        Referer: `https://www.instagram.com/p/${shortcode}/`,
+      },
+      body: `variables=${encodeURIComponent(JSON.stringify({ shortcode }))}&doc_id=10015901848480474`,
+    });
+    if (res.ok) {
+      const data = await res.json() as any;
+      media = data?.data?.xdt_shortcode_media ?? null;
+    }
+  } catch { /* 走 embed */ }
 
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  const data = await res.json() as any;
-
-  const media = data?.data?.xdt_shortcode_media;
-  if (!media) throw new Error("IG_NO_MEDIA");
+  if (!media) {
+    // embed 页面为公开 HTML，内含 video_url / display_url；直连被墙时走住宅出口
+    const kind = rawUrl.includes("/reel") ? "reel" : "p";
+    const embedUrl = `https://www.instagram.com/${kind}/${shortcode}/embed/captioned/`;
+    const embedHeaders = { "User-Agent": PC_UA, Accept: "text/html,application/xhtml+xml,*/*;q=0.8", "Accept-Language": "en-US,en;q=0.9" };
+    let html = "";
+    try {
+      const er = await fetch(embedUrl, { headers: embedHeaders });
+      if (er.ok) html = await er.text();
+    } catch { /* 走出口 */ }
+    if (!/video_url|display_url/.test(html) && env.RELAY_BASE && env.RELAY_KEY) {
+      try { html = await relayFetch(env, embedUrl, embedHeaders, 900000); } catch { /* 放弃 */ }
+    }
+    const video = /"video_url":"(https:[^"]+)"/.exec(html)?.[1]?.replace(/\\u0026/g, "&") ?? "";
+    const img = /"display_url":"(https:[^"]+)"/.exec(html)?.[1]?.replace(/\\u0026/g, "&") ?? "";
+    const user = /"username":"([^"]+)"/.exec(html)?.[1] ?? "Unknown";
+    const caption = /"caption":"((?:[^"\\]|\\.)*)"/.exec(html)?.[1]?.replace(/\\n/g, "\n").replace(/\\"/g, '"') ?? "";
+    if (!video && !img) throw new Error("IG_NO_MEDIA");
+    return {
+      platform: "instagram",
+      type: video ? "video" : "image",
+      author: user,
+      authorId: "",
+      avatar: "",
+      desc: caption,
+      cover: img,
+      videoUrl: video,
+      musicUrl: "",
+      duration: 0,
+      images: video ? [] : [img].filter(Boolean),
+      playCount: 0,
+      diggCount: 0,
+      commentCount: 0,
+      shareCount: 0,
+      downloadCount: 0,
+      createTime: 0,
+    };
+  }
 
   const owner = media.owner ?? {};
   const isVideo = media.is_video === true;
@@ -1509,9 +1645,9 @@ async function parseUrl(url: string, env: Env, browser?: BrowserWorker): Promise
     case "douyin": return parseDouyin(url, env, browser);
     case "kuaishou": return parseKuaishou(url);
     case "xiaohongshu": return parseXiaohongshu(url);
-    case "bilibili": return parseBilibili(url);
+    case "bilibili": return parseBilibili(url, env);
     case "youtube": return parseYouTube(url);
-    case "instagram": return parseInstagram(url);
+    case "instagram": return parseInstagram(url, env);
     default: throw new Error("UNSUPPORTED_PLATFORM");
   }
 }

@@ -27,11 +27,11 @@
 | 抖音 | `douyin` | 视频 / 图集 / 音乐 | 自注册 ttwid + iesdouyin 分享页 SSR 直出数据 |
 | 快手 | `kuaishou` | 视频 / 图集 | 从移动端 H5 `INIT_STATE` 提取 |
 | 小红书 | `xiaohongshu` | 视频 / 图文 | 从 `__INITIAL_STATE__` 提取 |
-| 哔哩哔哩 | `bilibili` | 视频 | 公共 API + html5 免登录流 |
-| YouTube | `youtube` | 视频（仅预览） | 签名加密，仅返回元数据 |
-| Instagram | `instagram` | 视频 / 图片 | GraphQL API |
+| 哔哩哔哩 | `bilibili` | 视频 | 公共 API + html5 免登录流（直连 412 时走住宅出口） |
+| YouTube | `youtube` | 视频 | Innertube IOS 客户端直出视频轨 + 音频轨（无需 PO Token/签名解密） |
+| Instagram | `instagram` | 视频 / 图片 | GraphQL + embed 双路（数据中心 IP 常被要求登录） |
 
-> ⚠️ 抖音对数据中心 IP 常有反爬（分享页返回空壳），本实现优先使用 Cloudflare 无头浏览器真实渲染破解空壳，失败时降级为多域名抓取，并受平台风控影响，失败时会给出明确提示。
+> ⚠️ 抖音已改为分享页 SSR 路线；小红书裸 `explore/<id>` 链接通常需要分享文本里的 `xsec_token`；Instagram 在数据中心 IP 下可能被登录墙拦截。
 
 ---
 
